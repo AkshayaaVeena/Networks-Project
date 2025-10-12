@@ -1,23 +1,30 @@
-import subprocess
-from pathlib import Path
-import config
+import asyncio
+import pyshark
+from config import PCAP_OUTPUT, CAPTURE_INTERFACE
 
-CAP_DIR = Path("captures")
-CAP_DIR.mkdir(parents=True, exist_ok=True)
-NETWORK_INTERFACE = "Ethernet"
-def capture_notifications(output_file=config.PCAP_OUTPUT, duration=config.CAPTURE_DURATION):
-    """
-    Captures push notification traffic from Android phone via tshark.
-    """
-    cmd = [
-        "tshark",
-        "-i", config.NETWORK_INTERFACE,
-        "-a", f"duration:{duration}",
-        "-f", config.CAPTURE_FILTER,
-        "-w", output_file
-    ]
-    print(f"📡 Capturing notifications for {duration}s on {config.NETWORK_INTERFACE}...")
-    subprocess.run(cmd, check=True)
-    print(f"✅ Capture saved to {output_file}")
-    return output_file
+def capture_packets():
+    # Ensure an event loop is set up for this thread
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError as e:
+        if str(e).startswith('There is no current event loop in thread'):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        else:
+            raise  # Raise if there's an unexpected error
 
+    # Create the live capture object
+    capture = pyshark.LiveCapture(interface=CAPTURE_INTERFACE, output_file=str(PCAP_OUTPUT))
+    print(f"[+] Starting capture for 20 seconds on {CAPTURE_INTERFACE}...")
+
+    # Start sniffing packets
+    try:
+        capture.sniff(timeout=20)  # Sniff for 20 seconds
+        print(f"[+] Capture complete: {PCAP_OUTPUT}")
+    except Exception as e:
+        print(f"[!] Capture error: {e}")
+    finally:
+        capture.close()
+
+if __name__ == "__main__":
+    capture_packets()

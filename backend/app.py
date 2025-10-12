@@ -1,73 +1,42 @@
-import time
-import json
+from flask import Flask, request, jsonify
+import threading
+from capture import capture_packets
+from analyze import analyze_pcap
+from config import NOTIFICATION_LOG
 from pathlib import Path
-from flask import Flask, jsonify
-from capture import capture_notifications
-from analyze import analyze_capture
+import json
 
-# Initialize Flask app
 app = Flask(__name__)
 
-# Path to notification log (from your Android listener)
-LOG_FILE = Path("notifications.log")  
+def capture_and_analyze_thread():
+    capture_packets()
+    analysis = analyze_pcap()
+    print("[+] Analysis result:", json.dumps(analysis, indent=2))
 
-def get_last_notification():
-    """Reads the last notification from log file."""
-    if LOG_FILE.exists():
-        with LOG_FILE.open("r") as f:
-            lines = f.readlines()
-            if lines:
-                return json.loads(lines[-1].strip())
-    return {"app": "Unknown App", "title": "", "text": ""}
+@app.route("/upload", methods=["POST"])
+def upload_notification():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No JSON received"}), 400
 
-def capture_and_analyze():
-    """Captures packets, analyzes PCAP, and adds last notification info."""
-    # Step 1: Capture packets (returns pcap file path)
-    pcap_file = capture_notifications()
+    # Append to notifications.log
+    with open(NOTIFICATION_LOG, "a") as f:
+        f.write(json.dumps(data) + "\n")
+    print("[+] Notification log received and saved.")
 
-    # Step 2: Analyze captured PCAP
-    result = analyze_capture(pcap_file)
+    # Start capture and analysis in a **daemon thread**
+    thread = threading.Thread(target=capture_and_analyze_thread, daemon=True)
+    thread.start()
 
-    # Step 3: Add last notification info
-    last_notification = get_last_notification()
-    result["app"] = last_notification.get("app", "Unknown App")
-    result["title"] = last_notification.get("title", "")
-    result["text"] = last_notification.get("text", "")
+    return jsonify({"status": "received"}), 200
 
-    return result
-
-# Flask route to view latest analysis in browser/JSON
 @app.route("/latest", methods=["GET"])
 def latest_analysis():
     try:
-        result = capture_and_analyze()
-        return jsonify(result)
+        analysis = analyze_pcap()
+        return jsonify(analysis)
     except Exception as e:
-        return jsonify({"error": str(e)})
-
-# Optional: continuous console printing (like your old loop)
-def main_loop():
-    while True:
-        try:
-            result = capture_and_analyze()
-
-            print("📊 Security Analysis Result:")
-            for k, v in result.items():
-                print(f"  {k}: {v}")
-
-            print("⏳ Waiting 5 seconds before next capture...\n")
-            time.sleep(5)
-
-        except KeyboardInterrupt:
-            print("🛑 Stopped by user")
-            break
-        except Exception as e:
-            print(f"⚠️ Error: {e}")
-            time.sleep(5)
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    # Run Flask API in a separate thread if needed
-    # For simplicity, here we just run the API
-    app.run(host="0.0.0.0", port=5000)
-    # If you want console loop instead, comment above line and uncomment below:
-    # main_loop()
+    app.run(host="0.0.0.0", port=3000, debug=True)
