@@ -2,6 +2,13 @@ import asyncio
 import pyshark
 from config import PCAP_OUTPUT, CAPTURE_INTERFACE
 
+def ensure_directory_exists(file_path):
+    output_dir = file_path.parent
+    if not output_dir.exists():
+        print(f"[!] Directory {output_dir} does not exist. Creating...")
+        output_dir.mkdir(parents=True, exist_ok=True)  # Create the directory if it doesn't exist
+    else:
+        print(f"[+] Directory {output_dir} exists.")
 def capture_packets():
     # Ensure an event loop is set up for this thread
     try:
@@ -19,7 +26,7 @@ def capture_packets():
 
     # Start sniffing packets
     try:
-        capture.sniff(timeout=20)  # Sniff for 20 seconds
+        capture.sniff(timeout=10)  # Sniff for 20 seconds
         print(f"[+] Capture complete: {PCAP_OUTPUT}")
     except Exception as e:
         print(f"[!] Capture error: {e}")

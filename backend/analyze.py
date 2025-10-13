@@ -1,8 +1,8 @@
 import asyncio
 import pyshark
-from config import PCAP_OUTPUT, NOTIFICATION_LOG
-import json
 from collections import defaultdict
+import json
+from config import PCAP_OUTPUT, NOTIFICATION_LOG
 
 TLS_VERSIONS = {
     "0x0301": "TLS 1.0",
@@ -13,10 +13,10 @@ TLS_VERSIONS = {
 
 # Scoring for TLS versions
 TLS_SCORING = {
-    "TLS 1.0": 10,  # Older versions get lower scores
+    "TLS 1.0": 10,
     "TLS 1.1": 15,
     "TLS 1.2": 30,
-    "TLS 1.3": 40   # Newest versions get the highest score
+    "TLS 1.3": 40
 }
 
 # Scoring for ciphers (weak to strong)
@@ -30,10 +30,10 @@ CIPHER_SCORING = {
 
 # Scoring based on delay (lower delay = higher score)
 DELAY_SCORING = {
-    (0, 50): 40,    # Excellent performance (0-50ms)
-    (51, 100): 30,  # Good performance (51-100ms)
-    (101, 200): 20, # Average performance (101-200ms)
-    (201, float('inf')): 10  # Poor performance (>200ms)
+    (0, 50): 40,   
+    (51, 100): 30,  
+    (101, 200): 20, 
+    (201, float('inf')): 10
 }
 
 # Scoring based on packet loss
@@ -47,7 +47,44 @@ def calculate_packet_loss_score(packet_loss_percent):
     else:
         return 10  # High packet loss
 
-def calculate_score(delay_ms, packet_loss_percent, tls_version, cipher):
+# Scoring for certificate strength (dummy values for now)
+CERTIFICATE_SCORING = {
+    "Weak": 10,
+    "Medium": 20,
+    "Strong": 30
+}
+
+def score_cipher(cipher_name: str) -> int:
+    cipher_name = cipher_name.upper()
+    
+    if 'TLS_AES' in cipher_name and 'GCM' in cipher_name:
+        return 100  # TLS 1.3 AEAD
+    elif 'CHACHA20' in cipher_name:
+        return 95
+    elif 'ECDHE' in cipher_name and 'GCM' in cipher_name:
+        return 90
+    elif 'ECDHE' in cipher_name and 'CBC' in cipher_name:
+        return 70
+    elif 'AES' in cipher_name and 'CBC' in cipher_name:
+        return 60
+    elif any(x in cipher_name for x in ['RC4', '3DES', 'MD5', 'NULL', 'EXPORT']):
+        return 0
+    else:
+        return 50  # unknown or medium
+def check_forward_secrecy(cipher):
+    if "ECDHE" in cipher or "DHE" in cipher:
+        return 40  # High score for forward secrecy
+    return 0  # No forward secrecy
+
+# Check if the certificate is self-signed or issued by a trusted CA (dummy check)
+def check_certificate(cert):
+    if cert == "self-signed":
+        return "Weak"
+    elif cert == "trusted":
+        return "Strong"
+    return "Medium"
+
+def calculate_score(delay_ms, packet_loss_percent, tls_version, cipher, certificate_strength):
     # Delay score
     for delay_range, score in DELAY_SCORING.items():
         if delay_range[0] <= delay_ms <= delay_range[1]:
@@ -61,23 +98,25 @@ def calculate_score(delay_ms, packet_loss_percent, tls_version, cipher):
     tls_score = TLS_SCORING.get(tls_version, 0)
     
     # Cipher score
-    cipher_score = CIPHER_SCORING.get(cipher, 0)
+    cipher_score = score_cipher(cipher)
     
-    # Combine all factors for a final score, weighted to your preference
-    total_score = (delay_score * 0.4) + (packet_loss_score * 0.3) + (tls_score * 0.2) + (cipher_score * 0.1)
+    # Certificate strength score
+    cert_score = CERTIFICATE_SCORING.get(certificate_strength, 0)
+    
+    # Forward secrecy score
+    fs_score = check_forward_secrecy(cipher)
+    
+    # Combine all factors for a final score, adjusting weights
+    total_score = (delay_score * 0.1) + (packet_loss_score * 0.1) + (tls_score * 0.2) + (cipher_score * 0.2) + (cert_score * 0.2) + (fs_score * 0.2)
     
     return int(total_score)
 
 def analyze_pcap():
-    # Ensure an event loop exists in this thread
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError as e:
-        if str(e).startswith('There is no current event loop in thread'):
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        else:
-            raise  # Raise if there's an unexpected error
+    # Ensure that the event loop is available in this thread (for asyncio compatibility)
+    loop = asyncio.get_event_loop()
+    if loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
     result = {
         "summary_score": 0,
@@ -92,12 +131,16 @@ def analyze_pcap():
             for line in f:
                 try:
                     notif = json.loads(line.strip())
-                    app = notif.get("app_name", "unknown_app")
+                    app = notif.get("app", "unknown_app")
                     result["apps"][app]["notifications"] += 1
                 except:
                     continue
 
     try:
+        # Create a separate event loop for the pyshark capture to avoid conflict
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         # Ensure event loop is set up
         cap = pyshark.FileCapture(str(PCAP_OUTPUT), keep_packets=True)
 
@@ -116,52 +159,73 @@ def analyze_pcap():
                 packet_count[app_name] += 1
 
                 if hasattr(pkt, "tls"):
-                    tls_version = TLS_VERSIONS.get(pkt.tls.record_version, None) if hasattr(pkt.tls, "record_version") else None
-                    cipher = pkt.tls.ciphersuite if hasattr(pkt.tls, "ciphersuite") else None
-                    # Calculate the score for this TLS session
-                    score = calculate_score(
-                        delay_ms=(last_seen[app_name] - first_seen[app_name]) * 1000,  # ms
-                        packet_loss_percent=0,  # Placeholder for actual packet loss logic
-                        tls_version=tls_version,
-                        cipher=cipher
-                    )
+                    tls_version = None
+                    cipher = None
+
+                    # Check if tls layer exists
+                    if hasattr(pkt.tls, 'record_version'):
+                        tls_version = TLS_VERSIONS.get(pkt.tls.record_version, "Unknown TLS Version")
+                    
+                    # Check if cipher info exists
+                   # print(pkt.tls)
+                    #print(f"FieldNames : {pkt.tls.field_names}")
+                    if(hasattr(pkt.tls,"handshake_ciphersuite")):
+                        cipher = pkt.tls.handshake_ciphersuite.showname_value
+                        cipher_score = score_cipher(cipher)
+                     #   print(f"Handshake cipher suite : {pkt.tls.handshake_ciphersuite.showname}")
+                        
+                    
+                    
+                    # Only attempt to access cipher if it's available
+                    if cipher is not None:
+                        fs_score = check_forward_secrecy(cipher)
+                    else:
+                        fs_score = 0  # No cipher or forward secrecy available
+                    
+                    # TLS Version and Cipher Scoring
+                    tls_score = TLS_SCORING.get(tls_version, 0)
+                    #cipher_score = score_cipher(cipher)
+                    
+                    #cipher_score = CIPHER_SCORING.get(cipher, 0)
+
+                    # Update the result for this app
                     result["apps"][app_name]["tls_sessions"].append({
-                        "src": pkt.ip.src,
-                        "dst": pkt.ip.dst,
                         "tls_version": tls_version,
                         "cipher": cipher,
-                        "score": score
+                        "tls_score": tls_score,
+                        "cipher_score": cipher_score,
+                        "forward_secrecy_score": fs_score
                     })
 
-        cap.close()
-
-        # Compute per-app metrics
-        for app_name in result["apps"]:
-            if app_name in first_seen and app_name in last_seen:
-                result["apps"][app_name]["avg_delay_ms"] = (last_seen[app_name] - first_seen[app_name]) * 1000
-            else:
-                result["apps"][app_name]["avg_delay_ms"] = 0
-            result["apps"][app_name]["packet_loss_percent"] = 0  # placeholder for future packet loss logic
-
-        # Overall metrics
-        delays = [v["avg_delay_ms"] for v in result["apps"].values() if v["avg_delay_ms"] > 0]
-        result["average_delay_ms"] = sum(delays) / len(delays) if delays else 0
-
+        # Summarize overall score
+        # Summarize overall score
+       # print("Overall score calculation")
+       # print(result["apps"].items())
         total_score = 0
-        total_sessions = 0
-        for app_data in result["apps"].values():
-            for sess in app_data["tls_sessions"]:
-                total_score += sess["score"]
-                total_sessions += 1
-        result["summary_score"] = total_score // total_sessions if total_sessions else 0
+        for app_name, app_data in result["apps"].items():  # Unpacking key (app_name) and value (app_data)
+            print("Sessions processing")
+            app_score = 0
+            for session in app_data["tls_sessions"]:  # Accessing tls_sessions from app_data
+                app_score += session["tls_score"] + session["cipher_score"] + session["forward_secrecy_score"]
+                app_score = app_score / len(app_data["tls_sessions"]) if app_data["tls_sessions"] else 0
+            result["apps"][app_name]["score"] = app_score
+            total_score += app_score
 
-        # Convert apps to normal dict
-        result["apps"] = dict(result["apps"])
+        result["summary_score"] = total_score / len(result["apps"]) if result["apps"] else 0
+        
+        #total_score = 0
+        #for app_name in result["apps"].items():
+        #    print("Sessions processing")
+        #    app_score = 0
+        #    for session in app_name["tls_sessions"]:
+        #        app_score += session["tls_score"] + session["cipher_score"] + session["forward_secrecy_score"]
+        #    app_score = app_score / len(app_name["tls_sessions"]) if app_name["tls_sessions"] else 0
+        #    result["apps"][app_name]["score"] = app_score
+        #    total_score += app_score
+
+        #result["summary_score"] = total_score / len(result["apps"]) if result["apps"] else 0
 
     except Exception as e:
-        print(f"[!] Error analyzing {PCAP_OUTPUT}: {e}")
-
+        print(f"[!] Error analyzing captures: {type(e).__name__}: {str(e)}")
+        result["error"] = f"{type(e).__name__}: {str(e)}"
     return result
-
-if __name__ == "__main__":
-    analyze_pcap()

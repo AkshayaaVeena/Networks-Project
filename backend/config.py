@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 # PCAP file output
 PCAP_OUTPUT = Path("captures/notifications.pcap")
