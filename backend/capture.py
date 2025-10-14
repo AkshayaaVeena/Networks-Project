@@ -6,7 +6,7 @@ def ensure_directory_exists(file_path):
     output_dir = file_path.parent
     if not output_dir.exists():
         print(f"[!] Directory {output_dir} does not exist. Creating...")
-        output_dir.mkdir(parents=True, exist_ok=True)  # Create the directory if it doesn't exist
+        output_dir.mkdir(parents=True, exist_ok=True)  
     else:
         print(f"[+] Directory {output_dir} exists.")
 def capture_packets():
