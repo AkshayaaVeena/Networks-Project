@@ -34,13 +34,13 @@ DELAY_SCORING = {
 
 def calculate_packet_loss_score(packet_loss_percent):
     if packet_loss_percent == 0:
-        return 40  # No packet loss is best
+        return 20  # No packet loss is best
     elif packet_loss_percent <= 10:
-        return 30  # Small packet loss
+        return 10  # Small packet loss
     elif packet_loss_percent <= 30:
-        return 20  # Moderate packet loss
+        return 50  # Moderate packet loss
     else:
-        return 10  # High packet loss
+        return 0  # High packet loss
 
 CERTIFICATE_SCORING = {
     "Weak": 10,
@@ -52,19 +52,19 @@ def score_cipher(cipher_name: str) -> int:
     cipher_name = cipher_name.upper()
     
     if 'TLS_AES' in cipher_name and 'GCM' in cipher_name:
-        return 100  
+        return 40  
     elif 'CHACHA20' in cipher_name:
-        return 95
+        return 30
     elif 'ECDHE' in cipher_name and 'GCM' in cipher_name:
-        return 90
+        return 20
     elif 'ECDHE' in cipher_name and 'CBC' in cipher_name:
-        return 70
+        return 15
     elif 'AES' in cipher_name and 'CBC' in cipher_name:
-        return 60
+        return 10
     elif any(x in cipher_name for x in ['RC4', '3DES', 'MD5', 'NULL', 'EXPORT']):
-        return 0
+        return 5
     else:
-        return 50  
+        return 0  
 def check_forward_secrecy(cipher):
     if "ECDHE" in cipher or "DHE" in cipher:
         return 40  
