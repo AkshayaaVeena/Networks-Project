@@ -23,7 +23,7 @@ def capture_packets():
     print(f"[+] Starting capture for 20 seconds on {CAPTURE_INTERFACE}...")
 
     try:
-        capture.sniff(timeout=10)  # Sniff for 20 seconds
+        capture.sniff(timeout=20)  
         print(f"[+] Capture complete: {PCAP_OUTPUT}")
     except Exception as e:
         print(f"[!] Capture error: {e}")
