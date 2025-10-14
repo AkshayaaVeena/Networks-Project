@@ -17,7 +17,7 @@ def capture_packets():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         else:
-            raise  # Raise if there's an unexpected error
+            raise  
 
     capture = pyshark.LiveCapture(interface=CAPTURE_INTERFACE, output_file=str(PCAP_OUTPUT))
     print(f"[+] Starting capture for 20 seconds on {CAPTURE_INTERFACE}...")
