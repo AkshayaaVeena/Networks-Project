@@ -9,6 +9,7 @@ def ensure_directory_exists(file_path):
         output_dir.mkdir(parents=True, exist_ok=True)  
     else:
         print(f"[+] Directory {output_dir} exists.")
+
 def capture_packets():
     try:
         loop = asyncio.get_event_loop()

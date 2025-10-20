@@ -10,6 +10,7 @@ TLS_VERSIONS = {
     "0x0303": "TLS 1.2",
     "0x0304": "TLS 1.3"
 }
+
 TLS_SCORING = {
     "TLS 1.0": 10,
     "TLS 1.1": 15,
@@ -17,42 +18,20 @@ TLS_SCORING = {
     "TLS 1.3": 40
 }
 
-CIPHER_SCORING = {
-    "RC4": 5,
-    "3DES": 10,
-    "AES128": 20,
-    "AES256": 30,
-    "AES-GCM": 40
-}
-
-DELAY_SCORING = {
-    (0, 50): 40,   
-    (51, 100): 30,  
-    (101, 200): 20, 
-    (201, float('inf')): 10
-}
-
-def calculate_packet_loss_score(packet_loss_percent):
-    if packet_loss_percent == 0:
-        return 20  # No packet loss is best
-    elif packet_loss_percent <= 10:
-        return 10  # Small packet loss
-    elif packet_loss_percent <= 30:
-        return 50  # Moderate packet loss
-    else:
-        return 0  # High packet loss
-
 CERTIFICATE_SCORING = {
     "Weak": 10,
     "Medium": 20,
     "Strong": 30
 }
 
+SUSPICIOUS_DOMAINS = {"tracker.com", "malicious.site", "ads.example"}
+
 def score_cipher(cipher_name: str) -> int:
+    if cipher_name is None:
+        return 0
     cipher_name = cipher_name.upper()
-    
     if 'TLS_AES' in cipher_name and 'GCM' in cipher_name:
-        return 40  
+        return 40
     elif 'CHACHA20' in cipher_name:
         return 30
     elif 'ECDHE' in cipher_name and 'GCM' in cipher_name:
@@ -64,11 +43,12 @@ def score_cipher(cipher_name: str) -> int:
     elif any(x in cipher_name for x in ['RC4', '3DES', 'MD5', 'NULL', 'EXPORT']):
         return 5
     else:
-        return 0  
+        return 0
+
 def check_forward_secrecy(cipher):
-    if "ECDHE" in cipher or "DHE" in cipher:
-        return 40  
-    return 0  
+    if cipher and ("ECDHE" in cipher or "DHE" in cipher):
+        return 20
+    return 0
 
 def check_certificate(cert):
     if cert == "self-signed":
@@ -77,27 +57,41 @@ def check_certificate(cert):
         return "Strong"
     return "Medium"
 
-def calculate_score(delay_ms, packet_loss_percent, tls_version, cipher, certificate_strength):
-    
-    for delay_range, score in DELAY_SCORING.items():
-        if delay_range[0] <= delay_ms <= delay_range[1]:
-            delay_score = score
-            break
-    
+def is_suspicious_domain(domain: str) -> bool:
+    return domain.lower() in SUSPICIOUS_DOMAINS
 
-    packet_loss_score = calculate_packet_loss_score(packet_loss_percent)
-    
-    tls_score = TLS_SCORING.get(tls_version, 0)
-    
-    cipher_score = score_cipher(cipher)
-    
-    cert_score = CERTIFICATE_SCORING.get(certificate_strength, 0)
-    
-    fs_score = check_forward_secrecy(cipher)
-    
-    total_score = (delay_score * 0.1) + (packet_loss_score * 0.1) + (tls_score * 0.2) + (cipher_score * 0.2) + (cert_score * 0.2) + (fs_score * 0.2)
-    
-    return int(total_score)
+def calculate_app_score(app_data):
+    sessions = app_data["tls_sessions"]
+    if not sessions:
+        return 0
+
+    total = 0
+    for session in sessions:
+        tls_score = TLS_SCORING.get(session["tls_version"], 0)
+        cipher_score = score_cipher(session["cipher"])
+        fs_score = check_forward_secrecy(session["cipher"])
+        cert_score = CERTIFICATE_SCORING.get(session.get("certificate_strength", "Medium"), 20)
+        insecure_penalty = -10 if session.get("uses_http", False) else 0
+        suspicious_penalty = -5 if session.get("suspicious_domain", False) else 0
+
+        session_score = (
+            tls_score * 0.2 +
+            cipher_score * 0.2 +
+            fs_score * 0.15 +
+            cert_score * 0.15 +
+            insecure_penalty +
+            suspicious_penalty
+        )
+        total += session_score
+
+    avg_score = total / len(sessions)
+    if app_data.get("quic_used", False):
+        avg_score += 5
+
+    normalized_score = (avg_score / 28.5) * 100
+    normalized_score = max(0, min(100, int(normalized_score)))
+
+    return normalized_score
 
 def analyze_pcap():
     loop = asyncio.get_event_loop()
@@ -107,9 +101,15 @@ def analyze_pcap():
 
     result = {
         "summary_score": 0,
-        "average_delay_ms": 0,
-        "packet_loss_percent": 0,
-        "apps": defaultdict(lambda: {"notifications": 0, "tls_sessions": [], "score": 0, "avg_delay_ms": 0, "packet_loss_percent": 0})
+        "apps": defaultdict(lambda: {
+            "notifications": 0,
+            "tls_sessions": [],
+            "quic_used": False,
+            "score": 0,
+            "domains_contacted": set(),
+            "packet_loss": 0.0,
+            "average_delay": 0.0
+        })
     }
 
     if NOTIFICATION_LOG.exists():
@@ -119,89 +119,102 @@ def analyze_pcap():
                     notif = json.loads(line.strip())
                     app = notif.get("app", "unknown_app")
                     result["apps"][app]["notifications"] += 1
-                except:
+                except json.JSONDecodeError:
                     continue
 
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        cap = pyshark.FileCapture(str(PCAP_OUTPUT), keep_packets=True)
-
-        first_seen = {}
-        last_seen = {}
-        packet_count = defaultdict(int)
+        cap = pyshark.FileCapture(str(PCAP_OUTPUT), keep_packets=False)
+        tcp_flows = defaultdict(lambda: {"seq": set(), "ack_times": [], "syn_time": None, "synack_time": None})
 
         for pkt in cap:
             if not hasattr(pkt, "ip"):
                 continue
-            pkt_time = float(pkt.sniff_timestamp)
+
+            if hasattr(pkt, "tcp"):
+                src = pkt.ip.src
+                dst = pkt.ip.dst
+                sport = pkt.tcp.srcport
+                dport = pkt.tcp.dstport
+                flow_id = f"{src}:{sport}->{dst}:{dport}"
+
+                seq = getattr(pkt.tcp, "seq", None)
+                if seq:
+                    tcp_flows[flow_id]["seq"].add(int(seq))
+
+                if "SYN" in pkt.tcp.flags and "ACK" not in pkt.tcp.flags:
+                    tcp_flows[flow_id]["syn_time"] = float(pkt.sniff_timestamp)
+                elif "SYN" in pkt.tcp.flags and "ACK" in pkt.tcp.flags:
+                    tcp_flows[flow_id]["synack_time"] = float(pkt.sniff_timestamp)
+
             for app_name in result["apps"]:
-                if app_name not in first_seen:
-                    first_seen[app_name] = pkt_time
-                last_seen[app_name] = pkt_time
-                packet_count[app_name] += 1
+                session = {
+                    "tls_version": "Unknown",
+                    "cipher": None,
+                    "certificate_strength": "Medium",
+                    "uses_http": False,
+                    "suspicious_domain": False
+                }
 
                 if hasattr(pkt, "tls"):
-                    tls_version = None
-                    cipher = None
+                    tls_version = getattr(pkt.tls, 'record_version', '')
+                    session["tls_version"] = TLS_VERSIONS.get(tls_version, "Unknown")
+                    cipher = getattr(pkt.tls, 'handshake_ciphersuite', None)
+                    session["cipher"] = cipher.showname_value if cipher else None
 
-                    if hasattr(pkt.tls, 'record_version'):
-                        tls_version = TLS_VERSIONS.get(pkt.tls.record_version, "Unknown TLS Version")
-                    
-                   # print(pkt.tls)
-                    #print(f"FieldNames : {pkt.tls.field_names}")
-                    if(hasattr(pkt.tls,"handshake_ciphersuite")):
-                        cipher = pkt.tls.handshake_ciphersuite.showname_value
-                        cipher_score = score_cipher(cipher)
-                     #   print(f"Handshake cipher suite : {pkt.tls.handshake_ciphersuite.showname}")
-                        
-                    
-                    if cipher is not None:
-                        fs_score = check_forward_secrecy(cipher)
-                    else:
-                        fs_score = 0  # No cipher or forward secrecy available
-                    
-                    tls_score = TLS_SCORING.get(tls_version, 0)
-                    #cipher_score = score_cipher(cipher)
-                    
-                    #cipher_score = CIPHER_SCORING.get(cipher, 0)
+                    sni = getattr(pkt.tls, 'handshake_extensions_server_name', None)
+                    if sni:
+                        session["sni"] = sni
+                        result["apps"][app_name]["domains_contacted"].add(sni)
+                        session["suspicious_domain"] = is_suspicious_domain(sni)
 
-                    result["apps"][app_name]["tls_sessions"].append({
-                        "tls_version": tls_version,
-                        "cipher": cipher,
-                        "tls_score": tls_score,
-                        "cipher_score": cipher_score,
-                        "forward_secrecy_score": fs_score
-                    })
+                    cert_field = getattr(pkt.tls, 'handshake_certificate', None)
+                    if cert_field:
+                        cert_type = "trusted" if "CA" in cert_field.showname else "self-signed"
+                        session["certificate_strength"] = check_certificate(cert_type)
 
-       # print("Overall score calculation")
-       # print(result["apps"].items())
+                    result["apps"][app_name]["tls_sessions"].append(session)
+
+                elif hasattr(pkt, "quic"):
+                    result["apps"][app_name]["quic_used"] = True
+
+                elif hasattr(pkt, "http") and not hasattr(pkt, "tls"):
+                    session["uses_http"] = True
+                    session["tls_version"] = "None"
+                    result["apps"][app_name]["tls_sessions"].append(session)
+
+        total_loss = 0
+        total_delay = 0
+        flow_count = len(tcp_flows)
+
+        for flow_id, info in tcp_flows.items():
+            seq_nums = sorted(list(info["seq"]))
+            if len(seq_nums) > 1:
+                expected_packets = seq_nums[-1] - seq_nums[0]
+                received_packets = len(seq_nums)
+                loss_percent = 100 * (1 - (received_packets / max(expected_packets, 1)))
+                total_loss += max(0, loss_percent)
+
+            if info["syn_time"] and info["synack_time"]:
+                delay = info["synack_time"] - info["syn_time"]
+                total_delay += delay
+
+        avg_loss = total_loss / flow_count if flow_count else 0
+        avg_delay = total_delay / flow_count if flow_count else 0
+
+        for app_data in result["apps"].values():
+            app_data["packet_loss"] = round(avg_loss, 2)
+            app_data["average_delay"] = round(avg_delay, 4)
+
         total_score = 0
-        for app_name, app_data in result["apps"].items(): 
-            print("Sessions processing")
-            app_score = 0
-            for session in app_data["tls_sessions"]: 
-                app_score += session["tls_score"] + session["cipher_score"] + session["forward_secrecy_score"]
-                app_score = app_score / len(app_data["tls_sessions"]) if app_data["tls_sessions"] else 0
-            result["apps"][app_name]["score"] = app_score
-            total_score += app_score
+        for app_name, app_data in result["apps"].items():
+            app_data["score"] = calculate_app_score(app_data)
+            app_data["domains_contacted"] = list(app_data["domains_contacted"])
+            total_score += app_data["score"]
 
         result["summary_score"] = total_score / len(result["apps"]) if result["apps"] else 0
-        
-        #total_score = 0
-        #for app_name in result["apps"].items():
-        #    print("Sessions processing")
-        #    app_score = 0
-        #    for session in app_name["tls_sessions"]:
-        #        app_score += session["tls_score"] + session["cipher_score"] + session["forward_secrecy_score"]
-        #    app_score = app_score / len(app_name["tls_sessions"]) if app_name["tls_sessions"] else 0
-        #    result["apps"][app_name]["score"] = app_score
-        #    total_score += app_score
-
-        #result["summary_score"] = total_score / len(result["apps"]) if result["apps"] else 0
 
     except Exception as e:
         print(f"[!] Error analyzing captures: {type(e).__name__}: {str(e)}")
         result["error"] = f"{type(e).__name__}: {str(e)}"
+
     return result

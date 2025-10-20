@@ -10,7 +10,6 @@ from pathlib import Path
 app = Flask(__name__)
 
 capture_done_event = threading.Event()
-
 latest_analysis_result = {}
 
 def capture_and_analyze_thread():
