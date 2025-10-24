@@ -1,13 +1,13 @@
-import os
-import threading
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # <-- import CORS
+import threading
+import json
 from capture import capture_packets
 from analyze import analyze_pcap
 from config import NOTIFICATION_LOG
-import json
-from pathlib import Path
 
 app = Flask(__name__)
+CORS(app)  # <-- enable CORS for all routes
 
 capture_done_event = threading.Event()
 latest_analysis_result = {}
