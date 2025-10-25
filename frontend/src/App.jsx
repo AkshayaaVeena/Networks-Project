@@ -1,175 +1,160 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
+import { Bar, Line } from "react-chartjs-2";
 import {
   Chart as ChartJS,
-  BarElement,
-  ArcElement,
   CategoryScale,
   LinearScale,
-  Tooltip,
+  BarElement,
+  LineElement,
+  PointElement,
   Legend,
+  Tooltip,
 } from "chart.js";
-import { Bar, Pie } from "react-chartjs-2";
 
-ChartJS.register(BarElement, ArcElement, CategoryScale, LinearScale, Tooltip, Legend);
+// Register Chart.js modules
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  LineElement,
+  PointElement,
+  Legend,
+  Tooltip
+);
 
-export default function App() {
-  const [analysis, setAnalysis] = useState(null);
-  const [status, setStatus] = useState("Fetching data...");
+const App = () => {
+  const [data, setData] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Fetch analysis from backend
+  const fetchData = async () => {
+    try {
+      setRefreshing(true);
+      const res = await axios.get("http://127.0.0.1:3000/latest");
+      setData(res.data);
+      setRefreshing(false);
+    } catch (err) {
+      console.error("Error fetching analysis:", err);
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchAnalysis = async () => {
-      try {
-        const res = await axios.get("http://localhost:3000/latest");
-        if (res.status === 202) {
-          setStatus("Analysis in progress...");
-        } else {
-          setAnalysis(res.data);
-          setStatus("Analysis ready ✅");
-        }
-      } catch (err) {
-        console.error(err);
-        setStatus("Backend not reachable ❌");
-      }
-    };
-
-    fetchAnalysis();
-    const interval = setInterval(fetchAnalysis, 50000);
+    fetchData();
+    const interval = setInterval(fetchData, 10000); // refresh every 10s
     return () => clearInterval(interval);
   }, []);
 
-  if (!analysis) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
-        <h1 className="text-2xl font-bold">{status}</h1>
-      </div>
-    );
-  }
+  if (!data) return <div className="p-4 text-center">Loading analysis...</div>;
 
-  const appNames = Object.keys(analysis.apps || {});
-  const scores = appNames.map((app) => analysis.apps[app].score);
-  const packetLoss = appNames.map((app) => analysis.apps[app].packet_loss);
-  const avgDelay = appNames.map((app) => analysis.apps[app].average_delay);
+  const apps = Object.entries(data.apps || {});
+  const appNames = apps.map(([name]) => name);
+  const appScores = apps.map(([_, app]) => app.score);
+  const packetLoss = apps.map(([_, app]) => app.packet_loss);
+  const avgDelay = apps.map(([_, app]) => app.average_delay);
 
-  // Collect TLS version usage across all apps
-  const tlsVersionCounts = {};
-  appNames.forEach((app) => {
-    const sessions = analysis.apps[app].tls_sessions || [];
-    sessions.forEach((s) => {
-      const version = s.tls_version || "Unknown";
-      tlsVersionCounts[version] = (tlsVersionCounts[version] || 0) + 1;
-    });
-  });
+  // Bar chart for app scores
+  const scoreBarData = {
+    labels: appNames,
+    datasets: [
+      {
+        label: "App Security Score",
+        data: appScores,
+        backgroundColor: "rgba(54, 162, 235, 0.6)",
+      },
+    ],
+  };
 
-  const tlsLabels = Object.keys(tlsVersionCounts);
-  const tlsValues = Object.values(tlsVersionCounts);
+  // Line chart for packet loss vs delay
+  const delayLossLineData = {
+    labels: appNames,
+    datasets: [
+      {
+        label: "Packet Loss (%)",
+        data: packetLoss,
+        borderColor: "rgba(255, 99, 132, 0.8)",
+        backgroundColor: "rgba(255, 99, 132, 0.2)",
+        tension: 0.3,
+      },
+      {
+        label: "Average Delay (s)",
+        data: avgDelay,
+        borderColor: "rgba(75, 192, 192, 0.8)",
+        backgroundColor: "rgba(75, 192, 192, 0.2)",
+        tension: 0.3,
+      },
+    ],
+  };
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-8">
-      <h1 className="text-4xl font-bold text-center mb-6">
-        🔍 Network Security Analysis Dashboard
+    <div className="max-w-6xl mx-auto p-6">
+      <h1 className="text-3xl font-bold mb-4 text-center">
+        App Security Analysis Dashboard
       </h1>
-      <p className="text-center text-gray-400 mb-8">{status}</p>
+      <p className="text-center mb-6">
+        Overall Summary Score:{" "}
+        <span className="font-semibold">{Math.round(data.summary_score)}</span>
+      </p>
 
-      {/* Summary */}
-      <div className="bg-gray-800 p-6 rounded-lg shadow-lg mb-8 text-center">
-        <h2 className="text-2xl mb-2 font-semibold">Overall Security Score</h2>
-        <p className="text-5xl font-bold text-green-400">
-          {Math.round(analysis.summary_score)} / 100
-        </p>
-      </div>
+      {refreshing && (
+        <p className="text-center text-sm text-gray-500">Refreshing...</p>
+      )}
 
-      {/* Charts */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        {/* Bar Chart - App Scores */}
-        <div className="bg-gray-800 p-6 rounded-lg shadow-lg">
-          <h2 className="text-xl font-semibold mb-4 text-center">App Security Scores</h2>
-          <Bar
-            data={{
-              labels: appNames,
-              datasets: [
-                {
-                  label: "Score",
-                  data: scores,
-                  backgroundColor: "rgba(75,192,192,0.6)",
-                },
-              ],
-            }}
-            options={{
-              responsive: true,
-              scales: {
-                y: { beginAtZero: true, max: 100 },
-              },
-            }}
-          />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div>
+          <h3 className="font-semibold mb-2">App Security Scores</h3>
+          <Bar data={scoreBarData} options={{ responsive: true }} />
         </div>
-
-        {/* Pie Chart - TLS Versions */}
-        <div className="bg-gray-800 p-6 rounded-lg shadow-lg">
-          <h2 className="text-xl font-semibold mb-4 text-center">TLS Versions Used</h2>
-          <Pie
-            data={{
-              labels: tlsLabels,
-              datasets: [
-                {
-                  label: "TLS Usage",
-                  data: tlsValues,
-                  backgroundColor: [
-                    "#34d399",
-                    "#60a5fa",
-                    "#fbbf24",
-                    "#f87171",
-                    "#a78bfa",
-                  ],
-                },
-              ],
-            }}
-            options={{ responsive: true }}
-          />
+        <div>
+          <h3 className="font-semibold mb-2">Packet Loss & Average Delay</h3>
+          <Line data={delayLossLineData} options={{ responsive: true }} />
         </div>
       </div>
 
-      {/* App Details Table */}
-      <div className="bg-gray-800 p-6 rounded-lg shadow-lg mt-10">
-        <h2 className="text-2xl font-semibold mb-4 text-center">App Details</h2>
-        <table className="w-full text-left text-gray-200 border-collapse">
-          <thead className="bg-gray-700">
-            <tr>
-              <th className="p-3">App Name</th>
-              <th className="p-3">Score</th>
-              <th className="p-3">Packet Loss (%)</th>
-              <th className="p-3">Avg Delay (s)</th>
-              <th className="p-3">Notifications</th>
-              <th className="p-3">Suspicious Domains</th>
-            </tr>
-          </thead>
-          <tbody>
-            {appNames.map((app) => {
-              const a = analysis.apps[app];
-              const suspicious = a.domains_contacted.filter((d) =>
-                ["tracker.com", "malicious.site", "ads.example"].includes(d)
-              );
-              return (
-                <tr
-                  key={app}
-                  className="hover:bg-gray-700 border-b border-gray-700"
-                >
-                  <td className="p-3 font-semibold">{app}</td>
-                  <td className="p-3">{a.score}</td>
-                  <td className="p-3">{a.packet_loss}</td>
-                  <td className="p-3">{a.average_delay}</td>
-                  <td className="p-3">{a.notifications}</td>
-                  <td className="p-3 text-red-400">
-                    {suspicious.length > 0 ? suspicious.join(", ") : "None"}
-                  </td>
+      {/* Table for detailed app info */}
+      <div>
+        <h3 className="font-semibold mb-2">App Session Details</h3>
+        {apps.map(([appName, app]) => (
+          <div key={appName} className="mb-6">
+            <h4 className="font-semibold text-lg mb-2">{appName}</h4>
+            <p>
+              Notifications: {app.notifications} | QUIC Used:{" "}
+              {app.quic_used ? "Yes" : "No"} | Packet Loss: {app.packet_loss}% | Avg Delay:{" "}
+              {app.average_delay}s | Score: {app.score}
+            </p>
+
+            <table className="w-full border-collapse border border-gray-300 mt-2">
+              <thead>
+                <tr className="bg-gray-200">
+                  <th className="border px-2 py-1">TLS Version</th>
+                  <th className="border px-2 py-1">Cipher</th>
+                  <th className="border px-2 py-1">Certificate Strength</th>
+                  <th className="border px-2 py-1">Uses HTTP</th>
+                  <th className="border px-2 py-1">Suspicious Domain</th>
+                  <th className="border px-2 py-1">Session Score</th>
+                  <th className="border px-2 py-1">Note</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {app.session_details.map((s, idx) => (
+                  <tr key={idx} className="text-center">
+                    <td className="border px-2 py-1">{s.tls_version}</td>
+                    <td className="border px-2 py-1">{s.cipher || "-"}</td>
+                    <td className="border px-2 py-1">{s.certificate_strength}</td>
+                    <td className="border px-2 py-1">{s.uses_http ? "Yes" : "No"}</td>
+                    <td className="border px-2 py-1">{s.suspicious_domain ? "Yes" : "No"}</td>
+                    <td className="border px-2 py-1">{s.session_score}</td>
+                    <td className="border px-2 py-1">{s.note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
       </div>
     </div>
   );
-}
+};
 
-
+export default App;
