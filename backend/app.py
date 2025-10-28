@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS  # <-- import CORS
+from flask_cors import CORS 
 import threading
 import json
 from capture import capture_packets
@@ -7,7 +7,7 @@ from analyze import analyze_pcap
 from config import NOTIFICATION_LOG
 
 app = Flask(__name__)
-CORS(app)  # <-- enable CORS for all routes
+CORS(app)  
 
 capture_done_event = threading.Event()
 latest_analysis_result = {}

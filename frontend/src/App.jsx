@@ -12,7 +12,6 @@ import {
   Tooltip,
 } from "chart.js";
 
-// Register Chart.js modules
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -27,7 +26,6 @@ const App = () => {
   const [data, setData] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Fetch analysis from backend
   const fetchData = async () => {
     try {
       setRefreshing(true);
@@ -42,7 +40,7 @@ const App = () => {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 10000); // refresh every 10s
+    const interval = setInterval(fetchData, 10000); 
     return () => clearInterval(interval);
   }, []);
 
@@ -54,7 +52,6 @@ const App = () => {
   const packetLoss = apps.map(([_, app]) => app.packet_loss);
   const avgDelay = apps.map(([_, app]) => app.average_delay);
 
-  // Bar chart for app scores
   const scoreBarData = {
     labels: appNames,
     datasets: [
@@ -66,7 +63,6 @@ const App = () => {
     ],
   };
 
-  // Line chart for packet loss vs delay
   const delayLossLineData = {
     labels: appNames,
     datasets: [
@@ -112,7 +108,6 @@ const App = () => {
         </div>
       </div>
 
-      {/* Table for detailed app info */}
       <div>
         <h3 className="font-semibold mb-2">App Session Details</h3>
         {apps.map(([appName, app]) => (

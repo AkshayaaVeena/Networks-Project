@@ -4,7 +4,6 @@ from collections import defaultdict
 import json
 from config import PCAP_OUTPUT, NOTIFICATION_LOG
 
-# ------------------ Constants ------------------
 TLS_VERSIONS = {
     "0x0301": "TLS 1.0",
     "0x0302": "TLS 1.1",
@@ -27,7 +26,6 @@ CERTIFICATE_SCORING = {
 
 SUSPICIOUS_DOMAINS = {"tracker.com", "malicious.site", "ads.example"}
 
-# ------------------ Helper Functions ------------------
 def score_cipher(cipher_name: str) -> int:
     if cipher_name is None:
         return 0
@@ -62,7 +60,6 @@ def check_certificate(cert):
 def is_suspicious_domain(domain: str) -> bool:
     return domain.lower() in SUSPICIOUS_DOMAINS
 
-# ------------------ App Scoring ------------------
 def calculate_app_score(app_data):
     sessions = app_data["tls_sessions"]
     if not sessions:
@@ -129,14 +126,12 @@ def calculate_app_score(app_data):
     normalized_score = int(max(0, min(100, (avg_score / max_possible) * 100)))
     return {"score": normalized_score, "session_details": session_details}
 
-# ------------------ Main Analyzer ------------------
 def analyze_pcap():
     loop = asyncio.get_event_loop()
     if loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    # Initialize result
     result = {
         "summary_score": 0,
         "apps": defaultdict(lambda: {
@@ -150,7 +145,6 @@ def analyze_pcap():
         })
     }
 
-    # --- Read notification log ---
     if NOTIFICATION_LOG.exists():
         with open(NOTIFICATION_LOG, "r") as f:
             for line in f:
@@ -161,7 +155,6 @@ def analyze_pcap():
                 except:
                     continue
 
-    # --- Track flows per app ---
     app_flows = defaultdict(lambda: defaultdict(lambda: {"seq": set(), "syn_time": None, "synack_time": None}))
 
     try:
@@ -170,18 +163,16 @@ def analyze_pcap():
             if not hasattr(pkt, "ip"):
                 continue
 
-            # --- Identify app (simple heuristic: use destination domain if TLS/HTTP) ---
             app_name = "unknown_app"
             if hasattr(pkt, "tls") and hasattr(pkt.tls, "handshake_extensions_server_name"):
                 sni = getattr(pkt.tls, "handshake_extensions_server_name")
                 if sni:
-                    app_name = sni.split('.')[0]  # simple mapping, can improve
+                    app_name = sni.split('.')[0]  
             elif hasattr(pkt, "http"):
                 host = getattr(pkt.http, "host", None)
                 if host:
                     app_name = host.split('.')[0]
 
-            # --- TCP flow tracking ---
             if hasattr(pkt, "tcp"):
                 src = pkt.ip.src
                 dst = pkt.ip.dst
@@ -199,7 +190,6 @@ def analyze_pcap():
                 elif "SYN" in flags and "ACK" in flags:
                     app_flows[app_name][flow_id]["synack_time"] = float(pkt.sniff_timestamp)
 
-            # --- TLS / QUIC / HTTP sessions ---
             session = {
                 "tls_version": "Unknown",
                 "cipher": None,
@@ -235,7 +225,6 @@ def analyze_pcap():
                 session["tls_version"] = "None"
                 result["apps"][app_name]["tls_sessions"].append(session)
 
-        # --- Compute packet loss & delay per app ---
         for app_name, flows in app_flows.items():
             total_loss = 0
             total_delay = 0
@@ -254,7 +243,6 @@ def analyze_pcap():
             result["apps"][app_name]["packet_loss"] = round(total_loss / flow_count, 2) if flow_count else 0
             result["apps"][app_name]["average_delay"] = round(total_delay / flow_count, 4) if flow_count else 0
 
-        # --- Compute app scores ---
         total_score = 0
         for app_name, app_data in result["apps"].items():
             app_result = calculate_app_score(app_data)
